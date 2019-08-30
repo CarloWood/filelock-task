@@ -7,7 +7,7 @@ for example, to cooperatively negotiate exclusive access to (a part of a) harddi
 
 ## Usage of the submodule.
 
-Please read [this document](https://github.com/CarloWood/cwm4/README_usage.md) for general information
+Please read [this document](https://github.com/CarloWood/cwm4/blob/master/README_usage.md) for general information
 on how to use cwm4 submodules.
 
 Checkout [ai-statefultask-testsuite](https://github.com/CarloWood/ai-statefultask-testsuite)
