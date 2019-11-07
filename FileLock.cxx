@@ -13,7 +13,7 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
     file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
 
     // Don't set the filename of a FileLock twice.
-    ASSERT(m_file_lock_instance == file_lock_map_w->end());
+    ASSERT(!m_file_lock_instance);
 
     // Look if we already have a FileLock with the same or equivalent path.
     boost::system::error_code error_code;
@@ -21,7 +21,7 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
     {
       if (boost::filesystem::equivalent((*iter)->canonical_filename(), normal_filename, error_code))
       {
-        m_file_lock_instance = iter;
+        m_file_lock_instance = *iter;
 #ifdef CWDEBUG
         if (normal_filename != (*iter)->canonical_filename())
           Dout(dc::warning, "FileLock::set_filename(" << filename << "): " << canonical_filename() << " already exists and is the same file!");
@@ -36,7 +36,7 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
     // This file is not in our map. Add it.
     auto res = file_lock_map_w->emplace(new FileLockSingleton(normal_filename));
     ASSERT(res.second);
-    m_file_lock_instance = res.first;
+    m_file_lock_instance = *res.first;
 
   } // Unlock s_file_lock_map.
 
@@ -53,14 +53,12 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
 FileLock::~FileLock()
 {
   file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
-  if (m_file_lock_instance == file_lock_map_w->end())
+  if (!m_file_lock_instance)
     return;
-#if 0
-  auto iter = file_lock_map_w->find(m_file_lock_instance->filename());
+  auto iter = file_lock_map_w->find(m_file_lock_instance->canonical_filename());
   ASSERT(iter != file_lock_map_w->end());
-  if (iter->second.use_count() == 2) // The one in the std::map and our own.
+  if (iter->use_count() == 2)           // The one in the std::map and our own.
     file_lock_map_w->erase(iter);
-#endif
 }
 
 //static
@@ -122,7 +120,7 @@ void intrusive_ptr_release(FileLockSingleton* p)
   if (--data_w->m_ref_count == 0)
   {
     data_w->m_file_lock.unlock();
-    Dout(dc::notice, "Released file lock " << print_using(p, &FileLockSingleton::print_on) << ".");
+    Dout(dc::notice, "Released file lock " << print_using(p, [&data_w](std::ostream& os, FileLockSingleton const& fls){ fls.print_on(os, data_w); }) << ".");
   }
 }
 

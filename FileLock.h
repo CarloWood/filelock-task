@@ -190,10 +190,11 @@ class FileLockSingleton
 // known at the time of their construction then of course you can pass it to the constructor,
 // but otherwise it is ok to pass it later - but before they are actually being used.
 //
-// FileLock is basically a wrapper around an iterator into a static std::set<std::shared_ptr<FileLockSingleton>>,
-// taking care of creating and adding the new FileLockSingleton to this map whenever a new filelock is added
-// (through set_filename), making sure that only one instance of FileLockSingleton is created per canonical
-// filename (inode).
+// FileLock is basically a wrapper around a boost::intrusive_ptr<FileLockSingleton>, along
+// with a static std::set<boost::intrusive_ptr<FileLockSingleton>> in order to take care of
+// creating and adding the new FileLockSingleton to this std::set whenever a new filelock is added
+// (through set_filename), making sure that only one instance of FileLockSingleton is created
+// per canonical filename (inode).
 //
 class FileLock
 {
@@ -207,6 +208,16 @@ class FileLock
       // not equivalent (doesn't resolve to the same actual file) before adding it.
       return p1->canonical_filename() < p2->canonical_filename();
     }
+    // Allow direct comparision with boost::filesystem::path.
+    using is_transparent = std::true_type;
+    bool operator()(boost::filesystem::path const& canonical_filename, std::shared_ptr<FileLockSingleton> const& p2) const
+    {
+      return canonical_filename < p2->canonical_filename();
+    }
+    bool operator()(std::shared_ptr<FileLockSingleton> const& p1, boost::filesystem::path const& canonical_filename) const
+    {
+      return p1->canonical_filename() < canonical_filename;
+    }
   };
   using file_lock_map_ts = aithreadsafe::Wrapper<std::set<std::shared_ptr<FileLockSingleton>, CanonicalFilenameCompare>, aithreadsafe::policy::Primitive<std::mutex>>;
   static file_lock_map_ts s_file_lock_map;                              // Global map of all file locks by canonical filename (path).
@@ -215,14 +226,14 @@ class FileLock
   // points to the same FileLockSingleton) also point to this FileLockSingleton instance.
   // Therefore the life time of the last FileLock that points to such instance must
   // surpass that of all such FileLockAccess instances.
-  file_lock_map_ts::data_type::const_iterator m_file_lock_instance;     // Pointer to underlaying FileLockSingleton.
+  std::shared_ptr<FileLockSingleton> m_file_lock_instance;         // Pointer to underlaying FileLockSingleton.
 
  public:
   // Default constructor. Use set_filename() to associate the FileLock with an inode.
-  FileLock() : m_file_lock_instance(file_lock_map_ts::rat(s_file_lock_map)->end()) { }
+  FileLock() { }
   // Construct a FileLock that is associated with the inode represented by filename.
   // If the file doesn't exist it is created.
-  FileLock(boost::filesystem::path const& filename) : m_file_lock_instance(file_lock_map_ts::rat(s_file_lock_map)->end()) { set_filename(filename); }
+  FileLock(boost::filesystem::path const& filename) { set_filename(filename); }
   ~FileLock();
 
   // Set the file (inode) to use. If the file doesn't exist it is created.
@@ -231,18 +242,19 @@ class FileLock
   boost::filesystem::path canonical_filename() const
   {
     // Don't call this function before calling set_filename().
-    ASSERT(m_file_lock_instance != file_lock_map_ts::rat(s_file_lock_map)->end());
-    return m_file_lock_instance->get()->canonical_filename();
+    ASSERT(m_file_lock_instance);
+    return m_file_lock_instance->canonical_filename();
   }
 
  private:
   friend class FileLockAccess;
-  FileLockSingleton* get_instance() const { return m_file_lock_instance->get(); }
+  FileLockSingleton* get_instance() const { return m_file_lock_instance.get(); }
 
  public:
+#ifdef CWDEBUG
   void print_on(std::ostream& os) const
   {
-    os << "{" << utils::print_using(*m_file_lock_instance, &FileLockSingleton::print_on) << '}';
+    os << "{" << utils::print_using(m_file_lock_instance, &FileLockSingleton::print_on) << '}';
   }
   friend std::ostream& operator<<(std::ostream& os, FileLock const& file_lock)
   {
@@ -250,6 +262,7 @@ class FileLock
     file_lock.print_on(os);
     return os;
   }
+#endif
 };
 
 // Once one has a FileLock initialized with a filename - it can be passed to the constructor of a
