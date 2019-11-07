@@ -3,27 +3,28 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-void FileLock::set_filename(boost::filesystem::path const& fname)
+void FileLock::set_filename(boost::filesystem::path const& filename)
 {
-  // Don't set the filename of a FileLock twice.
-  ASSERT(!m_file_lock_instance);
   // Don't try to set an empty filename.
-  ASSERT(!fname.empty());
+  ASSERT(!filename.empty());
+  boost::filesystem::path normal_filename = boost::filesystem::absolute(filename).lexically_normal();
 
-  bool file_exists = boost::filesystem::exists(fname);
-  file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
-  if (file_exists)
   {
+    file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
+
+    // Don't set the filename of a FileLock twice.
+    ASSERT(m_file_lock_instance == file_lock_map_w->end());
+
     // Look if we already have a FileLock with the same or equivalent path.
     boost::system::error_code error_code;
     for (auto iter = file_lock_map_w->begin(); iter != file_lock_map_w->end(); ++iter)
     {
-      if (boost::filesystem::equivalent((*iter)->filename(), fname, error_code))
+      if (boost::filesystem::equivalent((*iter)->canonical_filename(), normal_filename, error_code))
       {
-        m_file_lock_instance = *iter;
+        m_file_lock_instance = iter;
 #ifdef CWDEBUG
-        if (fname != (*iter)->filename())
-          Dout(dc::warning, "FileLock::set_filename(" << fname << "): " << filename() << " already exists and is the same file!");
+        if (normal_filename != (*iter)->canonical_filename())
+          Dout(dc::warning, "FileLock::set_filename(" << filename << "): " << canonical_filename() << " already exists and is the same file!");
 #endif
         return;
       }
@@ -32,33 +33,29 @@ void FileLock::set_filename(boost::filesystem::path const& fname)
         Dout(dc::warning, "Error: " << error_code.message());
       }
     }
-  }
-  else
-  {
-    // Create the file.
-    std::ofstream lockfile(fname);
-    if (!lockfile.is_open())
-      THROW_ALERTE("Failed to create lock file [FILENAME].", AIArgs("[FILENAME]", fname));
-    // Now that it exists we can get the canonical path.
-  }
-  boost::filesystem::path canonical_path = boost::filesystem::canonical(fname);
-  if (!file_exists)
-    Dout(dc::notice, "Created non-existing lockfile " << canonical_path << ".");
-  // This file is not in our map. Add it.
-  auto res = file_lock_map_w->emplace(new FileLockSingleton(canonical_path));
-  ASSERT(res.second);
-  m_file_lock_instance = *res.first;
+    // This file is not in our map. Add it.
+    auto res = file_lock_map_w->emplace(new FileLockSingleton(normal_filename));
+    ASSERT(res.second);
+    m_file_lock_instance = res.first;
+
+  } // Unlock s_file_lock_map.
 
   // Sanity check.
-  ASSERT(filename() == canonical_path);
+  // Note: our canonical means that it is the name stored in s_file_lock_map for that inode.
+  // However it can contain symbolic links: it is merely the (lexically normalized) path that
+  // was passed (first) to set_filename(). Lexically normalized means that occurances of '.'
+  // and '..' where removed from the path, but not symbolic links, if any. Boost filesystem
+  // also uses the word 'canonical' in which case they also remove symbolic links, but that
+  // is not how we use it.
+  ASSERT(canonical_filename() == normal_filename);
 }
 
 FileLock::~FileLock()
 {
-  if (!m_file_lock_instance)
+  file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
+  if (m_file_lock_instance == file_lock_map_w->end())
     return;
 #if 0
-  file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
   auto iter = file_lock_map_w->find(m_file_lock_instance->filename());
   ASSERT(iter != file_lock_map_w->end());
   if (iter->second.use_count() == 2) // The one in the std::map and our own.
@@ -74,7 +71,7 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
   FileLockSingleton::Data_ts::wat data_w(p->m_data);
   if (data_w->m_ref_count++ == 0)
   {
-    boost::filesystem::path const filename = p->filename();
+    boost::filesystem::path const canonical_filename = p->canonical_filename();
     if (!data_w->m_file_lock.try_lock())
     {
       data_w->m_ref_count = 0;
@@ -82,13 +79,13 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
       // Note that throwing aborts the constructor (of DatabaseFileLock) causing its destructor
       // not to be called, and therefore automatically guarantees that the corresponding
       // intrusive_ptr_release won't be called.
-      THROW_MALERT("Failed to obtain file lock [FILENAME]: is it already locked by some other process?", AIArgs("FILENAME", filename));
+      THROW_MALERT("Failed to obtain file lock [FILENAME]: is it already locked by some other process?", AIArgs("FILENAME", canonical_filename));
     }
     try
     {
-      std::fstream lockfile(filename, std::ios_base::in|std::ios_base::out|std::ios_base::binary);
+      std::fstream lockfile(canonical_filename, std::ios_base::in|std::ios_base::out|std::ios_base::binary);
       if (!lockfile.is_open())
-        THROW_ALERTE("Failed to open lock file [FILENAME].", AIArgs("[FILENAME]", filename));
+        THROW_ALERTE("Failed to open lock file [FILENAME].", AIArgs("[FILENAME]", canonical_filename));
       lockfile.exceptions(std::fstream::badbit);
 
       pid_t pid = getpid();
@@ -100,7 +97,7 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
         // Write our PID to the file if it wasn't already in there.
         lockfile.seekg(0);      // Rewind.
         if (!lockfile.write(reinterpret_cast<char const*>(&pid), sizeof(pid)))
-          Dout(dc::warning, "Could not write PID to the lock file " << filename << "!");
+          Dout(dc::warning, "Could not write PID to the lock file " << canonical_filename << "!");
       }
       Dout(dc::notice, "Obtained file lock " << print_using(*p, [&data_w](std::ostream& os, FileLockSingleton const& fls){ fls.print_on(os, data_w); }));
 #if 0 // FIXME
@@ -114,7 +111,7 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
     }
     catch (std::ios_base::failure const& error) // Thrown by std::fstream.
     {
-      THROW_ALERTC(error.code(), "Failed to open lock file [FILENAME]: [MESSAGE]", AIArgs("[FILENAME]", filename)("[MESSAGE]", error.what()));
+      THROW_ALERTC(error.code(), "Failed to open lock file [FILENAME]: [MESSAGE]", AIArgs("[FILENAME]", canonical_filename)("[MESSAGE]", error.what()));
     }
   }
 }
