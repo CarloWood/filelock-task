@@ -52,13 +52,18 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
 
 FileLock::~FileLock()
 {
-  file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
   if (!m_file_lock_instance)
     return;
+  file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
   auto iter = file_lock_map_w->find(m_file_lock_instance->canonical_filename());
   ASSERT(iter != file_lock_map_w->end());
-  if (iter->use_count() == 2)           // The one in the std::map and our own.
+  if (iter->use_count() == 2)           // The one in the std::set and our own.
+  {
+    // Do not destruct the last FileLock object that refers to a given FileLockSingleton
+    // (aka, canonical path of a file lock) while a FileLockAccess object for that still exists).
+    ASSERT(FileLockSingleton::Data_ts::rat(iter->get()->m_data)->m_number_of_FileLockAccess_objects == 0);
     file_lock_map_w->erase(iter);
+  }
 }
 
 //static
@@ -67,59 +72,84 @@ FileLock::file_lock_map_ts FileLock::s_file_lock_map;
 void intrusive_ptr_add_ref(FileLockSingleton* p)
 {
   FileLockSingleton::Data_ts::wat data_w(p->m_data);
-  if (data_w->m_ref_count++ == 0)
+  if (data_w->m_number_of_FileLockAccess_objects++ == 0)
   {
+    // Try to obtain the file lock.
+    bool const obtained_lock = data_w->m_file_lock.try_lock();
+
+    // (Try to) open file for reading from the start, and writing, in binary mode.
+    // Note that is extremely unlikely to fail when locking it succeeded (obtained_lock is true).
     boost::filesystem::path const canonical_filename = p->canonical_filename();
-    if (!data_w->m_file_lock.try_lock())
+    std::FILE* lock_file_stream = std::fopen(canonical_filename.c_str(), "r+b");
+
+    // When either failed - we will throw. Reset m_number_of_FileLockAccess_objects before doing so.
+    if (!obtained_lock || !lock_file_stream)
+      data_w->m_number_of_FileLockAccess_objects = 0;
+
+    // Bail out when opening the lock file failed, but only when could lock the file at first (the unlikely case).
+    if (obtained_lock && !lock_file_stream)
+      THROW_ALERTE("Failed to open lock file [FILENAME] after locking it?!", AIArgs("[FILENAME]", canonical_filename));
+
+    // Read the PID of the last process that obtained the file lock.
+    pid_t lastpid = 0;  // Use 0 for 'unknown' (that would be swapper or sched).
+    // Note that reading the PID here, without having the file lock (when obtained_lock is false thus),
+    // is a race condition; but in that case the result of this if statement only determines the text
+    // of the exception we're going to throw; so all is fine.
+    if (lock_file_stream && std::fread(reinterpret_cast<char*>(&lastpid), sizeof(lastpid), 1, lock_file_stream) != 1)
+      lastpid = 0;      // Reading PID failed.
+
+    // Bail out when locking the lock file failed.
+    if (!obtained_lock)
     {
-      data_w->m_ref_count = 0;
+      if (lock_file_stream)
+        std::fclose(lock_file_stream);
       // If another process has the file lock, then we don't block but instead throw an error.
       // Note that throwing aborts the constructor (of DatabaseFileLock) causing its destructor
       // not to be called, and therefore automatically guarantees that the corresponding
       // intrusive_ptr_release won't be called.
-      THROW_MALERT("Failed to obtain file lock [FILENAME]: is it already locked by some other process?", AIArgs("FILENAME", canonical_filename));
+      if (lastpid)
+        THROW_MALERT("Failed to obtain file lock [FILENAME]: it appears to be locked by process [PID].", AIArgs("FILENAME", canonical_filename)("[PID]", lastpid));
+      else
+        THROW_MALERT("Failed to obtain file lock [FILENAME]: is it already locked by some other process?", AIArgs("FILENAME", canonical_filename));
     }
-    try
-    {
-      std::fstream lockfile(canonical_filename, std::ios_base::in|std::ios_base::out|std::ios_base::binary);
-      if (!lockfile.is_open())
-        THROW_ALERTE("Failed to open lock file [FILENAME].", AIArgs("[FILENAME]", canonical_filename));
-      lockfile.exceptions(std::fstream::badbit);
 
-      pid_t pid = getpid();
-      pid_t lastpid;
-      // Read the PID of the last process that obtained the file lock.
-      if (!(lockfile.read(reinterpret_cast<char*>(&lastpid), sizeof(lastpid)) && lockfile.gcount() == sizeof(lastpid) && lastpid == pid))
-      {
-        lockfile.clear();
-        // Write our PID to the file if it wasn't already in there.
-        lockfile.seekg(0);      // Rewind.
-        if (!lockfile.write(reinterpret_cast<char const*>(&pid), sizeof(pid)))
-          Dout(dc::warning, "Could not write PID to the lock file " << canonical_filename << "!");
-      }
-      Dout(dc::notice, "Obtained file lock " << print_using(*p, [&data_w](std::ostream& os, FileLockSingleton const& fls){ fls.print_on(os, data_w); }));
-#if 0 // FIXME
-      // Flush the in-memory caches of the database, because they cannot be trusted anymore.
-      Dout(dc::primbackup, "Obtained FILE lock for 'uploads' database, PID " << pid << ". Flushing in-memory cache of database...");
-      DatabaseFileLock file_lock;					// Calls this same function again and recursively locks p->mData a second time.
-      DatabaseAIStatefulTaskLock stateful_task_lock(file_lock);
-      ScopedBlockingBackEndAccess back_end_access(stateful_task_lock);
-      back_end_access->clear_memory_cache();
-#endif
-    }
-    catch (std::ios_base::failure const& error) // Thrown by std::fstream.
+    Dout(dc::notice, "Obtained file lock " << print_using(*p, [&data_w](std::ostream& os, FileLockSingleton const& fls){ fls.print_on(os, data_w); }));
+
+    // Write our PID to the file if it wasn't already in there.
+    pid_t pid = getpid();
+    if (lastpid != pid)
     {
-      THROW_ALERTC(error.code(), "Failed to open lock file [FILENAME]: [MESSAGE]", AIArgs("[FILENAME]", canonical_filename)("[MESSAGE]", error.what()));
+      std::rewind(lock_file_stream);
+      if (std::fwrite(reinterpret_cast<char const*>(&pid), sizeof(pid), 1, lock_file_stream) != 1)
+        Dout(dc::warning, "Could not write PID to the lock file " << canonical_filename << "!");
+      // We can't close the file as that would UNLOCK the boost::interprocess::file_lock!
+      p->m_lock_file = lock_file_stream;        // So we can close the file later.
+      // But we must flush the data asap.
+      std::fflush(lock_file_stream);
     }
+
+#if 0 // FIXME
+    // Flush the in-memory caches of the database, because they cannot be trusted anymore.
+    Dout(dc::primbackup, "Obtained FILE lock for 'uploads' database, PID " << pid << ". Flushing in-memory cache of database...");
+    DatabaseFileLock file_lock;					// Calls this same function again and recursively locks p->mData a second time.
+    DatabaseAIStatefulTaskLock stateful_task_lock(file_lock);
+    ScopedBlockingBackEndAccess back_end_access(stateful_task_lock);
+    back_end_access->clear_memory_cache();
+#endif
   }
 }
 
 void intrusive_ptr_release(FileLockSingleton* p)
 {
   FileLockSingleton::Data_ts::wat data_w(p->m_data);
-  if (--data_w->m_ref_count == 0)
+  // Bug in this library!
+  ASSERT(data_w->m_number_of_FileLockAccess_objects > 0);
+  if (--data_w->m_number_of_FileLockAccess_objects == 0)
   {
     data_w->m_file_lock.unlock();
+    ASSERT(p->m_lock_file);
+    std::fclose(p->m_lock_file);
+    p->m_lock_file = nullptr;
     Dout(dc::notice, "Released file lock " << print_using(p, [&data_w](std::ostream& os, FileLockSingleton const& fls){ fls.print_on(os, data_w); }) << ".");
   }
 }
