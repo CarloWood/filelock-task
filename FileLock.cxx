@@ -7,7 +7,7 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
 {
   // Don't try to set an empty filename.
   ASSERT(!filename.empty());
-  boost::filesystem::path normal_filename = boost::filesystem::absolute(filename).lexically_normal();
+  boost::filesystem::path normal_path = boost::filesystem::absolute(filename).lexically_normal();
 
   {
     file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
@@ -19,12 +19,12 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
     boost::system::error_code error_code;
     for (auto iter = file_lock_map_w->begin(); iter != file_lock_map_w->end(); ++iter)
     {
-      if (boost::filesystem::equivalent((*iter)->canonical_filename(), normal_filename, error_code))
+      if (boost::filesystem::equivalent((*iter)->canonical_path(), normal_path, error_code))
       {
         m_file_lock_instance = *iter;
 #ifdef CWDEBUG
-        if (normal_filename != (*iter)->canonical_filename())
-          Dout(dc::warning, "FileLock::set_filename(" << filename << "): " << canonical_filename() << " already exists and is the same file!");
+        if (normal_path != (*iter)->canonical_path())
+          Dout(dc::warning, "FileLock::set_filename(" << filename << "): " << canonical_path() << " already exists and is the same file!");
 #endif
         return;
       }
@@ -34,7 +34,7 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
       }
     }
     // This file is not in our map. Add it.
-    auto res = file_lock_map_w->emplace(new FileLockSingleton(normal_filename));
+    auto res = file_lock_map_w->emplace(new FileLockSingleton(normal_path));
     ASSERT(res.second);
     m_file_lock_instance = *res.first;
 
@@ -47,7 +47,7 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
   // and '..' where removed from the path, but not symbolic links, if any. Boost filesystem
   // also uses the word 'canonical' in which case they also remove symbolic links, but that
   // is not how we use it.
-  ASSERT(canonical_filename() == normal_filename);
+  ASSERT(canonical_path() == normal_path);
 }
 
 FileLock::~FileLock()
@@ -55,7 +55,7 @@ FileLock::~FileLock()
   if (!m_file_lock_instance)
     return;
   file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
-  auto iter = file_lock_map_w->find(m_file_lock_instance->canonical_filename());
+  auto iter = file_lock_map_w->find(m_file_lock_instance->canonical_path());
   ASSERT(iter != file_lock_map_w->end());
   if (iter->use_count() == 2)           // The one in the std::set and our own.
   {
@@ -79,8 +79,8 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
 
     // (Try to) open file for reading from the start, and writing, in binary mode.
     // Note that is extremely unlikely to fail when locking it succeeded (obtained_lock is true).
-    boost::filesystem::path const canonical_filename = p->canonical_filename();
-    std::FILE* lock_file_stream = std::fopen(canonical_filename.c_str(), "r+b");
+    boost::filesystem::path const canonical_path = p->canonical_path();
+    std::FILE* lock_file_stream = std::fopen(canonical_path.c_str(), "r+b");
 
     // When either failed - we will throw. Reset m_number_of_FileLockAccess_objects before doing so.
     if (!obtained_lock || !lock_file_stream)
@@ -88,7 +88,7 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
 
     // Bail out when opening the lock file failed, but only when could lock the file at first (the unlikely case).
     if (obtained_lock && !lock_file_stream)
-      THROW_ALERTE("Failed to open lock file [FILENAME] after locking it?!", AIArgs("[FILENAME]", canonical_filename));
+      THROW_ALERTE("Failed to open lock file [FILENAME] after locking it?!", AIArgs("[FILENAME]", canonical_path));
 
     // Read the PID of the last process that obtained the file lock.
     pid_t lastpid = 0;  // Use 0 for 'unknown' (that would be swapper or sched).
@@ -108,9 +108,9 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
       // not to be called, and therefore automatically guarantees that the corresponding
       // intrusive_ptr_release won't be called.
       if (lastpid)
-        THROW_MALERT("Failed to obtain file lock [FILENAME]: it appears to be locked by process [PID].", AIArgs("FILENAME", canonical_filename)("[PID]", lastpid));
+        THROW_MALERT("Failed to obtain file lock [FILENAME]: it appears to be locked by process [PID].", AIArgs("FILENAME", canonical_path)("[PID]", lastpid));
       else
-        THROW_MALERT("Failed to obtain file lock [FILENAME]: is it already locked by some other process?", AIArgs("FILENAME", canonical_filename));
+        THROW_MALERT("Failed to obtain file lock [FILENAME]: is it already locked by some other process?", AIArgs("FILENAME", canonical_path));
     }
 
     Dout(dc::notice, "Obtained file lock " << print_using(*p, [&data_w](std::ostream& os, FileLockSingleton const& fls){ fls.print_on(os, data_w); }));
@@ -121,7 +121,7 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
     {
       std::rewind(lock_file_stream);
       if (std::fwrite(reinterpret_cast<char const*>(&pid), sizeof(pid), 1, lock_file_stream) != 1)
-        Dout(dc::warning, "Could not write PID to the lock file " << canonical_filename << "!");
+        Dout(dc::warning, "Could not write PID to the lock file " << canonical_path << "!");
       // We can't close the file as that would UNLOCK the boost::interprocess::file_lock!
       p->m_lock_file = lock_file_stream;        // So we can close the file later.
       // But we must flush the data asap.
