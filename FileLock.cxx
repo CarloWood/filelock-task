@@ -60,7 +60,8 @@ FileLock::~FileLock()
   if (iter->use_count() == 2)           // The one in the std::set and our own.
   {
     // Do not destruct the last FileLock object that refers to a given FileLockSingleton
-    // (aka, canonical path of a file lock) while a FileLockAccess object for that still exists).
+    // (aka, canonical path of a file lock) while a FileLockAccess object for that still exists.
+    // That includes therefore AIStatefulTaskNamedMutex and AIStatefulTaskLockTask objects.
     ASSERT(FileLockSingleton::Data_ts::rat(iter->get()->m_data)->m_number_of_FileLockAccess_objects == 0);
     file_lock_map_w->erase(iter);
   }
@@ -159,7 +160,7 @@ void intrusive_ptr_add_ref(AIStatefulTaskLockSingleton* p)
   AIStatefulTaskLockSingleton::Data_ts::wat data_w(p->m_data);
   int prev_count = data_w->m_ref_count++;
   // We should never get here when p isn't already owned, because we can't set the owner from here.
-  // Grabbing the ownership (and incrementing the ref_countt to 1) is done from AIStatefulTaskLockSingleton::try_lock().
+  // Grabbing the ownership (and incrementing the ref_count to 1) is done from AIStatefulTaskLockSingleton::try_lock().
   ASSERT(prev_count > 0);
 }
 
@@ -175,23 +176,25 @@ void intrusive_ptr_release(AIStatefulTaskLockSingleton* p)
 
 boost::intrusive_ptr<AIStatefulTaskLockSingleton> AIStatefulTaskLockSingleton::try_lock(AIStatefulTask const* owner)
 {
-  boost::intrusive_ptr<AIStatefulTaskLockSingleton> res;
-  bool already_owned;
+  DoutEntering(dc::notice, "AIStatefulTaskLockSingleton::try_lock(" << owner << ")");
   {
     Data_ts::wat data_w(m_data);
-    already_owned = data_w->m_ref_count > 0;
-    if (!already_owned)
+    if (data_w->m_ref_count > 0)                // Already owned?
     {
-      data_w->m_ref_count = 1;
-      data_w->m_owner = owner;
+      // try_lock is not recursive. Strictly alternate calls to try_lock and unlock.
+      ASSERT(data_w->m_owner != owner);
+      return nullptr;                           // Already owned by another task.
     }
+    data_w->m_owner = owner;                    // Set owner.
+    // Now we would like to do:
+    //   return this;                           // Increment reference count.
+    // and we're done. But we can't do that because m_data is locked: it would result in a dead lock.
+    // We can't release the lock first while m_ref_count is still zero, because that might cause m_owner to be overwritten by another task.
+    // Therefore we artificially increment the reference count without initializing res, first:
+    data_w->m_ref_count = 1;
   }
-  if (!already_owned)
-  {
-    Dout(dc::notice, owner << " obtained stateful task lock.");
-    res = this;                                 // This increments the ref_count to 2.
-    Data_ts::wat(m_data)->m_ref_count = 1;      // So, set it back to 1.
-  }
+  boost::intrusive_ptr<AIStatefulTaskLockSingleton> res(this, false); // Assign res without incrementing reference count.
+  Dout(dc::notice, "Obtained " << *this);
   return res;
 }
 

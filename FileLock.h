@@ -43,7 +43,6 @@ class AIStatefulTaskLockSingleton
   friend class FileLockSingleton;
   AIStatefulTaskLockSingleton() = default;
   AIStatefulTaskLockSingleton(AIStatefulTaskLockSingleton const&) = delete;
-  //AIStatefulTaskLockSingleton(AIStatefulTask const* owner) : m_data(owner) { }
 
  public:
   bool is_owner(AIStatefulTask const* owner) const { return Data_ts::crat(m_data)->m_owner == owner; }
@@ -68,7 +67,7 @@ class AIStatefulTaskLockSingleton
     if (!data_r->m_ref_count)
       os << "{unowned}";
     else
-      os << "{owned by " << data_r->m_owner << "(ref'd " << data_r->m_ref_count << ")}";
+      os << "{T owned by " << data_r->m_owner << " (ref'd " << data_r->m_ref_count << ")T}";
   }
   friend std::ostream& operator<<(std::ostream& os, AIStatefulTaskLockSingleton const& stateful_task_lock_singleton)
   {
@@ -167,12 +166,12 @@ class FileLockSingleton
   // Support for printing to debug ostreams.
   void print_on(std::ostream& os, Data_ts::crat const& data_r) const
   {
-    os << '{' << m_canonical_path << ' ';
+    os << "{F" << m_canonical_path << ' ';
     if (!data_r->m_number_of_FileLockAccess_objects)
-      os << "(unlocked)}";
+      os << "(unlocked)F}";
     else
       os << "(ref'd " << data_r->m_number_of_FileLockAccess_objects << "), " <<
-        utils::print_using(m_stateful_task_lock_instance, &AIStatefulTaskLockSingleton::print_on) << "}";
+        utils::print_using(m_stateful_task_lock_instance, &AIStatefulTaskLockSingleton::print_on) << "F}";
   }
   void print_on(std::ostream& os) const
   {
@@ -258,13 +257,18 @@ class FileLock
 
  private:
   friend class FileLockAccess;
-  std::shared_ptr<FileLockSingleton> const& get_instance() const { return m_file_lock_instance; }
+  std::shared_ptr<FileLockSingleton> const& get_instance() const
+  {
+    // Associate a FileLock with a path before passing it to a FileLockAccess object.
+    ASSERT(m_file_lock_instance);
+    return m_file_lock_instance;
+  }
 
  public:
 #ifdef CWDEBUG
   void print_on(std::ostream& os) const
   {
-    os << "{" << utils::print_using(m_file_lock_instance, &FileLockSingleton::print_on) << '}';
+    os << "{f" << utils::print_using(m_file_lock_instance, &FileLockSingleton::print_on) << "f}";
   }
   friend std::ostream& operator<<(std::ostream& os, FileLock const& file_lock)
   {
@@ -275,6 +279,8 @@ class FileLock
 #endif
 };
 
+// Locking the file lock.
+//
 // Once one has a FileLock initialized with a filename - it can be passed to the constructor of a
 // FileLockAccess object which will lock the underlaying file lock of the filename passed to the
 // used FileLock.
@@ -295,6 +301,13 @@ class FileLockAccess
 
  public:
   FileLockAccess(FileLock& file_lock) : DEBUG_ONLY(m_debug_weak_ptr(file_lock.get_instance()),) m_file_lock_ptr(file_lock.get_instance().get()) { }
+  FileLockAccess(FileLock&& file_lock) : DEBUG_ONLY(m_debug_weak_ptr(file_lock.get_instance()),) m_file_lock_ptr(file_lock.get_instance().get())
+  {
+    // The FileLock object passed to this constructor cannot be the only FileLock object.
+    // You need to keep one around with a much longer lifetime.
+    ASSERT(m_debug_weak_ptr.use_count() > 2);
+  }
+
 #if CW_DEBUG
   // The default copy constructor suffices, but this one has a debug check builtin.
   FileLockAccess(FileLockAccess const& file_lock_access) :
@@ -327,7 +340,9 @@ class FileLockAccess
     if (m_debug_weak_ptr.expired())
       os << "*{deleted FileLockSingleton}";
     else
-      os << "{" << utils::print_using(m_file_lock_ptr, &FileLockSingleton::print_on) << '}';
+      // This prints for example:
+      //  {*{"ai-statefultask-testsuite/filelock-task/flock1" (ref'd 2), {owned by 0x17309c0 (ref'd 1)}}}
+      os << "{a" << utils::print_using(m_file_lock_ptr, &FileLockSingleton::print_on) << "a}";
   }
   friend std::ostream& operator<<(std::ostream& os, FileLockAccess const& file_lock_access)
   {
@@ -346,8 +361,14 @@ class AIStatefulTaskNamedMutex
   boost::intrusive_ptr<AIStatefulTaskLockSingleton> m_stateful_task_lock_ref;   // Kept to increment the reference count of AIStatefulTaskLockSingleton.
 
  public:
-  AIStatefulTaskNamedMutex(FileLockAccess const& file_lock_access) : m_file_lock_access(file_lock_access) { }
-  AIStatefulTaskNamedMutex(FileLock&& file_lock) : m_file_lock_access(file_lock) { }
+  // Create a AIStatefulTaskNamedMutex that already has the file lock locked.
+  AIStatefulTaskNamedMutex(FileLockAccess const& file_lock_access) noexcept : m_file_lock_access(file_lock_access) { }
+  // Create a AIStatefulTaskNamedMutex directly from a FileLock (this will try to lock the file lock if it isn't locked already).
+  // Using a reference here because the FileLock that is passed should not be a temporary.
+  AIStatefulTaskNamedMutex(FileLock& file_lock) : m_file_lock_access(file_lock) { }
+  // Create a AIStatefulTaskNamedMutex directly from an rvalue reference to a FileLock.
+  // In debug mode this requires that some other FileLock object also exists.
+  AIStatefulTaskNamedMutex(FileLock&& file_lock) : m_file_lock_access(std::move(file_lock)) { }
 
 #if 0
   // Actually, it's also ok when LockedBackEnd wants to create a temporary AIStatefulTaskNamedMutex to access itself...
@@ -386,11 +407,11 @@ class AIStatefulTaskNamedMutex
  public:
   void print_on(std::ostream& os) const
   {
-    os << "{" << utils::print_using(m_file_lock_access, &FileLockAccess::print_on) << ", ";
+    os << "{m" << utils::print_using(m_file_lock_access, &FileLockAccess::print_on) << ", ";
     if (is_locked())
-      os << utils::print_using(m_stateful_task_lock_ref, &AIStatefulTaskLockSingleton::print_on) << '}';
+      os << utils::print_using(m_stateful_task_lock_ref, &AIStatefulTaskLockSingleton::print_on) << "m}";
     else
-      os << "<unlocked>}";
+      os << "<unlocked>m}";
   }
   friend std::ostream& operator<<(std::ostream& os, AIStatefulTaskNamedMutex const& task_lock_access)
   {
