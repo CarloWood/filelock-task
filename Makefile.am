@@ -4,7 +4,11 @@ noinst_LTLIBRARIES = libfilelocktask.la
 
 SOURCES = \
 	FileLock.cxx \
-	FileLock.h
+	FileLock.h \
+	TaskLock.cxx \
+	TaskLock.h \
+	FileLockAccess.h \
+	AIStatefulTaskNamedMutex.h
 
 libfilelocktask_la_SOURCES = ${SOURCES}
 libfilelocktask_la_CXXFLAGS = @LIBCWD_R_FLAGS@
