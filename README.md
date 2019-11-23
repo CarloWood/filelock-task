@@ -1,6 +1,6 @@
 # filelock-task submodule
 
-This repository is a xwm4 [git submodule](https://git-scm.com/book/en/v2/Git-Tools-Submodules)
+This repository is a cwm4 [git submodule](https://git-scm.com/book/en/v2/Git-Tools-Submodules)
 providing a [statefultask](https://github.com/CarloWood/ai-statefultask)
 that performs a file lock, and a thread lock for that file lock; so that it can be used,
 for example, to cooperatively negotiate exclusive access to (a part of a) harddisk.
