@@ -35,7 +35,7 @@ class TaskLock : public AIStatefulTask
   using direct_base_type = AIStatefulTask;
 
   enum stateful_task_lock_task_state_type {
-    TaskLock_lock = direct_base_type::max_state,       // The first state.
+    TaskLock_lock = direct_base_type::state_end,       // The first state.
     TaskLock_locked
   };
 
@@ -49,7 +49,7 @@ class TaskLock : public AIStatefulTask
 
   ~TaskLock() { DoutEntering(dc::statefultask, "~TaskLock() [" << this << "]"); }
 
-  static state_type constexpr max_state = TaskLock_locked + 1;
+  static state_type constexpr state_end = TaskLock_locked + 1;
 
   void unlock()
   {
