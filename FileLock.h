@@ -30,7 +30,7 @@
 #include "debug.h"
 #include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/intrusive_ptr.hpp>
-#include <boost/filesystem.hpp>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <set>
@@ -44,9 +44,9 @@ class FileLockAccess;
 // Helper class for FileLock.
 //
 // An object of this type contains the "canonical" path (that is, the *first* path used for a
-// FileLock object, passed through boost::filesystem::absolute(filename).lexically_normal(),
-// of all (subsequent) 'boost::filesystem::equivalent' paths -- not the result of
-// boost::filesystem::canonical which also removes all symbolic links), the aithreadsafe
+// FileLock object, passed through std::filesystem::absolute(filename).lexically_normal(),
+// of all (subsequent) 'std::filesystem::equivalent' paths -- not the result of
+// std::filesystem::canonical which also removes all symbolic links), the aithreadsafe
 // boost::interprocess::file_lock instance with a reference count of the number of FileLockAccess
 // objects pointing to this instance, and an instance of AIStatefulTaskLockSingleton: a reference
 // counted pointer to the AIStatefulTask that owns the lock, if any.
@@ -71,7 +71,7 @@ class FileLockSingleton : public AIStatefulTaskMutex
   using Data_ts = aithreadsafe::Wrapper<Data, aithreadsafe::policy::Primitive<std::mutex>>;
 
   Data_ts m_data;                                               // Threadsafe instance of Data, see above.
-  boost::filesystem::path const m_canonical_path;               // The (canonical) path to the underlaying lock file.
+  std::filesystem::path const m_canonical_path;                 // The (canonical) path to the underlaying lock file.
   std::FILE* m_lock_file;                                       // This points to an open file m_canonical_path once the file lock has been obtained.
                                                                 // it is used to write the PID to. We can't close it anymore because that also unlocks
                                                                 // the file lock!
@@ -80,7 +80,7 @@ class FileLockSingleton : public AIStatefulTaskMutex
   // Only class FileLock may construct objects of this type.
   // Note that it may only create ONE instance of FileLockSingleton PER
   // canonical path, otherwise this wouldn't be a singleton.
-  FileLockSingleton(boost::filesystem::path const& canonical_path) : m_canonical_path(canonical_path)
+  FileLockSingleton(std::filesystem::path const& canonical_path) : m_canonical_path(canonical_path)
   {
     DoutEntering(dc::notice, "FileLockSingleton(" << canonical_path << ") [" << this << "]");
     bool success = false;
@@ -117,7 +117,7 @@ class FileLockSingleton : public AIStatefulTaskMutex
   }
 
   // Accessor.
-  boost::filesystem::path const& canonical_path() const
+  std::filesystem::path const& canonical_path() const
   {
     return m_canonical_path;
   }
@@ -186,13 +186,13 @@ class FileLock
       // it to the set!
       return p1->canonical_path() < p2->canonical_path();
     }
-    // Allow direct comparision with boost::filesystem::path.
+    // Allow direct comparision with std::filesystem::path.
     using is_transparent = std::true_type;
-    bool operator()(boost::filesystem::path const& canonical_path, std::shared_ptr<FileLockSingleton> const& p2) const
+    bool operator()(std::filesystem::path const& canonical_path, std::shared_ptr<FileLockSingleton> const& p2) const
     {
       return canonical_path < p2->canonical_path();
     }
-    bool operator()(std::shared_ptr<FileLockSingleton> const& p1, boost::filesystem::path const& canonical_path) const
+    bool operator()(std::shared_ptr<FileLockSingleton> const& p1, std::filesystem::path const& canonical_path) const
     {
       return p1->canonical_path() < canonical_path;
     }
@@ -211,13 +211,13 @@ class FileLock
   FileLock() { }
   // Construct a FileLock that is associated with the inode represented by filename.
   // If the file doesn't exist it is created.
-  FileLock(boost::filesystem::path const& filename) { set_filename(filename); }
+  FileLock(std::filesystem::path const& filename) { set_filename(filename); }
   ~FileLock();
 
   // Set the file (inode) to use. If the file doesn't exist it is created.
-  void set_filename(boost::filesystem::path const& filename);
+  void set_filename(std::filesystem::path const& filename);
 
-  boost::filesystem::path canonical_path() const
+  std::filesystem::path canonical_path() const
   {
     // Don't call this function before calling set_filename().
     ASSERT(m_file_lock_instance);

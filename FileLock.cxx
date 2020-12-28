@@ -30,11 +30,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-void FileLock::set_filename(boost::filesystem::path const& filename)
+void FileLock::set_filename(std::filesystem::path const& filename)
 {
   // Don't try to set an empty filename.
   ASSERT(!filename.empty());
-  boost::filesystem::path normal_path = boost::filesystem::absolute(filename).lexically_normal();
+  std::filesystem::path normal_path = std::filesystem::absolute(filename).lexically_normal();
 
   {
     file_lock_map_ts::wat file_lock_map_w(s_file_lock_map);
@@ -43,10 +43,10 @@ void FileLock::set_filename(boost::filesystem::path const& filename)
     ASSERT(!m_file_lock_instance);
 
     // Look if we already have a FileLock with the same or equivalent path.
-    boost::system::error_code error_code;
+    std::error_code error_code;
     for (auto iter = file_lock_map_w->begin(); iter != file_lock_map_w->end(); ++iter)
     {
-      if (boost::filesystem::equivalent((*iter)->canonical_path(), normal_path, error_code))
+      if (std::filesystem::equivalent((*iter)->canonical_path(), normal_path, error_code))
       {
         m_file_lock_instance = *iter;
 #ifdef CWDEBUG
@@ -107,7 +107,7 @@ void intrusive_ptr_add_ref(FileLockSingleton* p)
 
     // (Try to) open file for reading from the start, and writing, in binary mode.
     // Note that is extremely unlikely to fail when locking it succeeded (obtained_lock is true).
-    boost::filesystem::path const canonical_path = p->canonical_path();
+    std::filesystem::path const canonical_path = p->canonical_path();
     std::FILE* lock_file_stream = std::fopen(canonical_path.c_str(), "r+b");
 
     // When either failed - we will throw. Reset m_number_of_FileLockAccess_objects before doing so.
