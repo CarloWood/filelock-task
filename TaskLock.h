@@ -62,6 +62,7 @@ class TaskLock : public AIStatefulTask
 
  private:
   bool lock(AIStatefulTask::condition_type condition) { return m_file_lock_access.lock_task(this, condition); }
+  char const* task_name_impl() const override { return "TaskLock"; }
   char const* state_str_impl(state_type run_state) const final override;
   void multiplex_impl(state_type run_state) final override;
 };
