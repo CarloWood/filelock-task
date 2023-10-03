@@ -46,7 +46,7 @@ class FileLockAccess;
 // An object of this type contains the "canonical" path (that is, the *first* path used for a
 // FileLock object, passed through std::filesystem::absolute(filename).lexically_normal(),
 // of all (subsequent) 'std::filesystem::equivalent' paths -- not the result of
-// std::filesystem::canonical which also removes all symbolic links), the aithreadsafe
+// std::filesystem::canonical which also removes all symbolic links), the threadsafe
 // boost::interprocess::file_lock instance with a reference count of the number of FileLockAccess
 // objects pointing to this instance, and an instance of AIStatefulTaskLockSingleton: a reference
 // counted pointer to the AIStatefulTask that owns the lock, if any.
@@ -68,7 +68,7 @@ class FileLockSingleton : public AIStatefulTaskMutex
                                                                 // The boost documentation advises to use the same thread to lock
                                                                 // and unlock a file-- but that is too restrictive imho.
   };
-  using Data_ts = aithreadsafe::Wrapper<Data, aithreadsafe::policy::Primitive<std::mutex>>;
+  using Data_ts = threadsafe::Unlocked<Data, threadsafe::policy::Primitive<std::mutex>>;
 
   Data_ts m_data;                                               // Threadsafe instance of Data, see above.
   std::filesystem::path const m_canonical_path;                 // The (canonical) path to the underlaying lock file.
@@ -197,7 +197,7 @@ class FileLock
       return p1->canonical_path() < canonical_path;
     }
   };
-  using file_lock_map_ts = aithreadsafe::Wrapper<std::set<std::shared_ptr<FileLockSingleton>, CanonicalPathCompare>, aithreadsafe::policy::Primitive<std::mutex>>;
+  using file_lock_map_ts = threadsafe::Unlocked<std::set<std::shared_ptr<FileLockSingleton>, CanonicalPathCompare>, threadsafe::policy::Primitive<std::mutex>>;
   static file_lock_map_ts s_file_lock_map;                              // Global map of all file locks by canonical path.
 
   // FileLockAccess instances created from this FileLock instance (or another that
