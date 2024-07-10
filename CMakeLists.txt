@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12...3.16)
+cmake_minimum_required(VERSION 3.15...3.30)
 
 project(filelock-task
   DESCRIPTION "A statefultask-based file lock task"
@@ -13,12 +13,6 @@ include(AICxxProject)
 
 # This project is an OBJECT-library, used by other git submodules and the main project.
 add_library(filelock-task_ObjLib OBJECT)
-
-# Set SOURCE_DIR to the current directory.
-set_property(
-  TARGET filelock-task_ObjLib
-  PROPERTY SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
-)
 
 # The list of source files.
 target_sources(filelock-task_ObjLib
